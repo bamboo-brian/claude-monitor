@@ -9,7 +9,7 @@
 //! from Zellij's own `SessionUpdate` event, which reports panes across *all*
 //! live sessions. Any reported instance whose pane no longer exists is dropped.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::Deserialize;
 use zellij_tile::prelude::*;
@@ -17,13 +17,20 @@ use zellij_tile::prelude::*;
 const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:47100";
 const POLL_INTERVAL_SECS: f64 = 1.0;
 
+/// One instance as reported by the server. The server is client-agnostic, so
+/// `zellij_session`/`zellij_pane` are only present for instances running under
+/// Zellij; this plugin ignores any without them.
 #[derive(Deserialize, Clone)]
 struct ReportedInstance {
-    session: String,
-    pane_id: u32,
     status: String,
     #[serde(default)]
     cwd: String,
+    #[serde(default)]
+    zellij_session: String,
+    #[serde(default)]
+    zellij_pane: Option<u32>,
+    #[serde(default)]
+    updated_at: u64,
 }
 
 #[derive(Deserialize)]
@@ -145,15 +152,35 @@ impl State {
         );
     }
 
-    /// Instances to display. Liveness is best-effort: we only drop an instance
-    /// when we positively know its pane is gone (its session is present in
-    /// `SessionUpdate` but the pane isn't). If we have no info for its session
-    /// yet — common right after opening the plugin, before Zellij has populated
-    /// cross-session info — we still show it, trusting the server.
+    /// Instances to display. The server is client-agnostic, so we first keep
+    /// only Zellij instances (those with a `zellij_session`/`zellij_pane`), then
+    /// dedup per pane keeping the most recent report (a new instance can share a
+    /// pane with a stale one that never sent SessionEnd).
+    ///
+    /// Liveness is best-effort: we only drop an instance when we positively know
+    /// its pane is gone (its session is in `SessionUpdate` but the pane isn't).
+    /// If we have no info for its session yet — common right after opening the
+    /// plugin, before Zellij has populated cross-session info — we still show it.
     fn visible(&self) -> Vec<VisibleEntry> {
-        let mut out = Vec::new();
+        // Filter to Zellij instances, deduped per (session, pane) by recency.
+        let mut latest: HashMap<(&str, u32), &ReportedInstance> = HashMap::new();
         for inst in &self.reported {
-            let (tab, is_current_session) = match self.locate_pane(&inst.session, inst.pane_id) {
+            let (Some(pane), false) = (inst.zellij_pane, inst.zellij_session.is_empty()) else {
+                continue;
+            };
+            latest
+                .entry((inst.zellij_session.as_str(), pane))
+                .and_modify(|cur| {
+                    if inst.updated_at > cur.updated_at {
+                        *cur = inst;
+                    }
+                })
+                .or_insert(inst);
+        }
+
+        let mut out = Vec::new();
+        for ((session, pane), inst) in latest {
+            let (tab, is_current_session) = match self.locate_pane(session, pane) {
                 PaneLookup::Alive { tab, is_current } => (Some(tab), is_current),
                 PaneLookup::UnknownSession => (None, false),
                 PaneLookup::Dead => continue,
@@ -164,6 +191,12 @@ impl State {
                 is_current_session,
             });
         }
+        out.sort_by(|a, b| {
+            a.inst
+                .zellij_session
+                .cmp(&b.inst.zellij_session)
+                .then(a.inst.zellij_pane.cmp(&b.inst.zellij_pane))
+        });
         out
     }
 
@@ -223,17 +256,17 @@ impl State {
         let Some(entry) = visible.get(self.selected) else {
             return;
         };
+        // `visible()` only yields entries with a Zellij pane, so this is Some.
+        let Some(pane) = entry.inst.zellij_pane else {
+            return;
+        };
         if entry.is_current_session {
             // Already here: just focus the pane, no session switch.
-            focus_terminal_pane(entry.inst.pane_id, false, false);
+            focus_terminal_pane(pane, false, false);
         } else {
             // `tab` may be None if we don't have session info yet; Zellij will
             // still locate the pane by id.
-            switch_session_with_focus(
-                &entry.inst.session,
-                entry.tab,
-                Some((entry.inst.pane_id, false)),
-            );
+            switch_session_with_focus(&entry.inst.zellij_session, entry.tab, Some((pane, false)));
         }
         close_self();
     }
@@ -250,7 +283,7 @@ fn row_text(entry: &VisibleEntry, selected: bool) -> Text {
     let content = format!(
         "{glyph} {status:<7} {session}  {cwd}",
         status = entry.inst.status,
-        session = entry.inst.session,
+        session = entry.inst.zellij_session,
     );
 
     let mut text = Text::new(&content);

@@ -1,12 +1,16 @@
 //! claude-monitor-server
 //!
-//! An in-memory HTTP server that tracks the status of Claude Code instances
-//! running across Zellij panes. Claude Code's native HTTP hooks POST their
-//! event JSON here; the Zellij plugin polls `GET /state` to render the list.
+//! An in-memory HTTP server that tracks the status of Claude Code instances.
+//! Claude Code hooks POST their event JSON here; clients (e.g. the Zellij
+//! plugin) poll `GET /state`.
 //!
-//! Instance identity comes from the `X-Zellij-Session` / `X-Zellij-Pane`
-//! request headers (injected by the hook via env interpolation). Status is
-//! derived from the `hook_event_name` field of the event JSON body.
+//! Instances are keyed by their Claude Code `session_id` — present in every hook
+//! body — so the server is client-agnostic and doesn't care whether an instance
+//! runs under Zellij. Client-specific *location* metadata (for Zellij: the
+//! session name and pane id, from the `X-Zellij-*` headers) is stored alongside
+//! for clients that can use it, but is optional. Filtering to a particular
+//! client's instances is the client's job (the Zellij plugin only shows
+//! instances it can match to a live pane).
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -24,23 +28,26 @@ use axum::{
 use serde::Serialize;
 use serde_json::{json, Value};
 
-type InstanceKey = (String, u32);
-
 #[derive(Clone, Serialize)]
 struct Instance {
-    session: String,
-    pane_id: u32,
+    /// Claude Code session id — the universal instance key.
+    session_id: String,
     status: &'static str,
     cwd: String,
-    session_id: String,
+    /// Zellij location metadata (empty / `None` for non-Zellij clients).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    zellij_session: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    zellij_pane: Option<u32>,
     updated_at: u128,
 }
 
 struct AppState {
-    instances: Mutex<HashMap<InstanceKey, Instance>>,
+    /// Keyed by Claude Code `session_id`.
+    instances: Mutex<HashMap<String, Instance>>,
     /// Shell command run when an instance transitions from `working` to a
     /// halted state (`idle`/`waiting`). Read once from `CLAUDE_MONITOR_SOUND`;
-    /// `None` disables the sound. See `play_sound`.
+    /// `None` disables it. See `play_sound`.
     sound_cmd: Option<String>,
 }
 
@@ -93,8 +100,7 @@ fn resolve_port() -> u16 {
         .unwrap_or(47100)
 }
 
-/// Map a Claude Code hook event name to a display status, or `None` if the
-/// event should remove the instance (SessionEnd) or be ignored.
+/// What a hook event does to the tracked instance.
 enum Action {
     Set(&'static str),
     Remove,
@@ -116,70 +122,51 @@ fn action_for(event: &str, tool_name: &str) -> Action {
         // approval) means waiting; any other tool means actively working.
         "PreToolUse" if is_input_tool(tool_name) => Action::Set("waiting"),
         "PreToolUse" => Action::Set("working"),
-        // Waiting for the user: fired the moment a permission dialog appears, or
-        // when an MCP tool elicits input. (Not `Notification` — that one is
-        // informational and fires seconds late by design.)
+        // Waiting for the user: the moment a permission dialog appears, or an MCP
+        // tool elicits input. (Not `Notification` — informational, fires late.)
         "PermissionRequest" | "Elicitation" => Action::Set("waiting"),
         "SessionEnd" => Action::Remove,
         _ => Action::Ignore,
     }
 }
 
-async fn report(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Json<Value> {
-    let session = header_str(&headers, "x-zellij-session");
-    let pane_str = header_str(&headers, "x-zellij-pane");
-
+async fn report(State(state): State<SharedState>, headers: HeaderMap, body: Bytes) -> Json<Value> {
     let payload: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
-    let event = payload
-        .get("hook_event_name")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let cwd = payload
-        .get("cwd")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let session_id = payload
-        .get("session_id")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    // Present on tool events (PreToolUse/PostToolUse); lets us treat
-    // input-blocking tools as "waiting".
-    let tool_name = payload
-        .get("tool_name")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let event = str_field(&payload, "hook_event_name");
+    let session_id = str_field(&payload, "session_id").to_string();
+    let cwd = str_field(&payload, "cwd").to_string();
+    let tool_name = str_field(&payload, "tool_name");
 
-    // Not running inside Zellij (or misconfigured hook): nothing to track.
-    if session.is_empty() {
-        log_report(event, "-", &pane_str, "ignored (no zellij session)");
+    // Optional client (Zellij) location metadata.
+    let zellij_session = header_str(&headers, "x-zellij-session");
+    let zellij_pane: Option<u32> = {
+        let s = header_str(&headers, "x-zellij-pane");
+        (!s.is_empty()).then(|| s.parse().ok()).flatten()
+    };
+
+    // The session id is the key; without it there's nothing to track.
+    if session_id.is_empty() {
+        log_report(event, "-", &zellij_session, "ignored (no session_id)");
         return Json(json!({}));
     }
-    let pane_id: u32 = pane_str.parse().unwrap_or(0);
 
-    let key: InstanceKey = (session.clone(), pane_id);
     let outcome = {
         let mut map = state.instances.lock().unwrap();
         match action_for(event, tool_name) {
             Action::Set(status) => {
-                let was_working = map.get(&key).map(|i| i.status) == Some("working");
+                let was_working = map.get(&session_id).map(|i| i.status) == Some("working");
                 let sounded = was_working && (status == "idle" || status == "waiting");
                 if sounded {
-                    play_sound(&state.sound_cmd, status, &session, pane_id);
+                    play_sound(&state.sound_cmd, status, &session_id, &zellij_session, zellij_pane);
                 }
                 map.insert(
-                    key,
+                    session_id.clone(),
                     Instance {
-                        session: session.clone(),
-                        pane_id,
+                        session_id: session_id.clone(),
                         status,
                         cwd,
-                        session_id,
+                        zellij_session: zellij_session.clone(),
+                        zellij_pane,
                         updated_at: now_millis(),
                     },
                 );
@@ -190,28 +177,95 @@ async fn report(
                 }
             }
             Action::Remove => {
-                map.remove(&key);
+                map.remove(&session_id);
                 "removed".to_string()
             }
             Action::Ignore => "ignored".to_string(),
         }
     };
-    log_report(event, &session, &pane_str, &outcome);
-    // Return an empty-object decision so HTTP decision hooks (e.g.
-    // PermissionRequest) read "no opinion" and the normal flow proceeds.
+    log_report(event, short_id(&session_id), &zellij_session, &outcome);
+    // Empty-object decision so HTTP decision hooks (e.g. PermissionRequest) read
+    // "no opinion" and the normal flow proceeds.
     Json(json!({}))
+}
+
+async fn state_handler(State(state): State<SharedState>) -> Json<Value> {
+    let map = state.instances.lock().unwrap();
+    let mut instances: Vec<Instance> = map.values().cloned().collect();
+    instances.sort_by(|a, b| {
+        a.zellij_session
+            .cmp(&b.zellij_session)
+            .then(a.zellij_pane.cmp(&b.zellij_pane))
+            .then(a.session_id.cmp(&b.session_id))
+    });
+    Json(json!({ "instances": instances }))
+}
+
+/// Fire the configured sound command (if any) for a working→halt transition.
+/// Runs `sh -c "$cmd"` detached, with the transition details exposed as env
+/// vars so a script can vary the sound. Spawned on the runtime and reaped by an
+/// awaiting task so it never blocks the request or leaves a zombie.
+fn play_sound(
+    cmd: &Option<String>,
+    status: &'static str,
+    session_id: &str,
+    zellij_session: &str,
+    zellij_pane: Option<u32>,
+) {
+    let Some(cmd) = cmd.clone() else {
+        return;
+    };
+    let session_id = session_id.to_string();
+    let zellij_session = zellij_session.to_string();
+    let zellij_pane = zellij_pane.map(|p| p.to_string()).unwrap_or_default();
+    tokio::spawn(async move {
+        let _ = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .env("CLAUDE_MONITOR_STATUS", status)
+            .env("CLAUDE_MONITOR_SESSION_ID", session_id)
+            .env("CLAUDE_MONITOR_ZELLIJ_SESSION", zellij_session)
+            .env("CLAUDE_MONITOR_ZELLIJ_PANE", zellij_pane)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await;
+    });
 }
 
 /// Log an inbound report to stdout with a millisecond timestamp, flushing so it
 /// appears immediately even when stdout is redirected to a file (block-buffered).
-fn log_report(event: &str, session: &str, pane: &str, outcome: &str) {
+fn log_report(event: &str, id: &str, zellij_session: &str, outcome: &str) {
+    let z = if zellij_session.is_empty() {
+        "-"
+    } else {
+        zellij_session
+    };
     let mut out = std::io::stdout().lock();
     let _ = writeln!(
         out,
-        "[{}] report event={event:<16} session={session} pane={pane} -> {outcome}",
+        "[{}] report event={event:<16} id={id:<8} zellij={z} -> {outcome}",
         hms_millis(),
     );
     let _ = out.flush();
+}
+
+fn str_field<'a>(payload: &'a Value, key: &str) -> &'a str {
+    payload.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+fn header_str(headers: &HeaderMap, name: &str) -> String {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// First 8 chars of a session id, for compact log lines.
+fn short_id(session_id: &str) -> &str {
+    &session_id[..session_id.len().min(8)]
 }
 
 /// Current wall-clock time of day as `HH:MM:SS.mmm` (UTC). Deltas between lines
@@ -223,45 +277,6 @@ fn hms_millis() -> String {
     let secs = now.as_secs();
     let (h, m, s) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
     format!("{h:02}:{m:02}:{s:02}.{:03}", now.subsec_millis())
-}
-
-/// Fire the configured sound command (if any) for a working→halt transition.
-/// Runs `sh -c "$cmd"` detached, with the transition details exposed as env
-/// vars so a script can vary the sound. Spawned on the runtime and reaped by an
-/// awaiting task so it never blocks the request or leaves a zombie.
-fn play_sound(cmd: &Option<String>, status: &'static str, session: &str, pane: u32) {
-    let Some(cmd) = cmd.clone() else {
-        return;
-    };
-    let session = session.to_string();
-    tokio::spawn(async move {
-        let _ = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(&cmd)
-            .env("CLAUDE_MONITOR_STATUS", status)
-            .env("CLAUDE_MONITOR_SESSION", session)
-            .env("CLAUDE_MONITOR_PANE", pane.to_string())
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await;
-    });
-}
-
-async fn state_handler(State(state): State<SharedState>) -> Json<Value> {
-    let map = state.instances.lock().unwrap();
-    let mut instances: Vec<Instance> = map.values().cloned().collect();
-    instances.sort_by(|a, b| a.session.cmp(&b.session).then(a.pane_id.cmp(&b.pane_id)));
-    Json(json!({ "instances": instances }))
-}
-
-fn header_str(headers: &HeaderMap, name: &str) -> String {
-    headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string()
 }
 
 fn now_millis() -> u128 {

@@ -25,9 +25,13 @@ zellij plugin (one per session)  ◄────────── GET /state �
   • drops instances whose pane is gone   • Enter → switch_session_with_focus(...)
 ```
 
-- Instance identity is `(zellij session, pane id)`, passed by the hooks as the
-  `X-Zellij-Session` / `X-Zellij-Pane` headers (interpolated from
-  `$ZELLIJ_SESSION_NAME` / `$ZELLIJ_PANE_ID`, which Zellij sets in every pane).
+- The server is **client-agnostic**: it keys instances by their Claude Code
+  `session_id` (present in every hook body) and doesn't care whether an instance
+  runs under Zellij. Zellij *location* metadata — the session name and pane id —
+  rides along in the `X-Zellij-Session` / `X-Zellij-Pane` headers (interpolated
+  from `$ZELLIJ_SESSION_NAME` / `$ZELLIJ_PANE_ID`) and is stored as optional
+  fields. The **plugin** filters: it only shows instances that carry Zellij
+  metadata *and* match a live pane, so the same server could back other clients.
 - All events are `http` hooks **except `SessionStart`, which is a `command`
   (curl) hook.** A `SessionStart` HTTP hook fires so early in startup that it gets
   dropped and the report never arrives; running it as a synchronous command hook
@@ -148,8 +152,9 @@ every event, and not when an instance starts idle). These env vars are available
 to it, so a script can vary the sound:
 
 - `CLAUDE_MONITOR_STATUS` — `idle` or `waiting`
-- `CLAUDE_MONITOR_SESSION` — the Zellij session name
-- `CLAUDE_MONITOR_PANE` — the pane id
+- `CLAUDE_MONITOR_SESSION_ID` — the Claude Code session id
+- `CLAUDE_MONITOR_ZELLIJ_SESSION` — the Zellij session name (empty if not in Zellij)
+- `CLAUDE_MONITOR_ZELLIJ_PANE` — the Zellij pane id (empty if not in Zellij)
 
 To enable it under a service manager, add `CLAUDE_MONITOR_SOUND` to the unit's
 environment (the systemd user unit's `Environment=` or the launchd plist's
