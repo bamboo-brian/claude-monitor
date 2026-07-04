@@ -1,0 +1,33 @@
+name: release
+
+# Cut a release by pushing a version tag:
+#   (bump plugin/Cargo.toml version), then
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add wasm target
+        run: rustup target add wasm32-wasip1
+
+      - name: Build plugin (wasm)
+        run: cargo build --release -p claude-monitor-plugin --target wasm32-wasip1
+
+      - name: Create release with the wasm artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            target/wasm32-wasip1/release/claude-monitor-plugin.wasm \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

@@ -1,0 +1,21 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add wasm target
+        run: rustup target add wasm32-wasip1
+
+      - name: Build server
+        run: cargo build --release -p claude-monitor-server
+
+      - name: Build plugin (wasm)
+        run: cargo build --release -p claude-monitor-plugin --target wasm32-wasip1

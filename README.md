@@ -71,6 +71,27 @@ Artifacts:
 - `target/release/claude-monitor-server`
 - `target/wasm32-wasip1/release/claude-monitor-plugin.wasm`
 
+CI (`.github/workflows/ci.yml`) builds both on every push/PR.
+
+## Releasing
+
+Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds the
+plugin wasm and publishes a GitHub Release with `claude-monitor-plugin.wasm`
+attached:
+
+```sh
+# bump the version in plugin/Cargo.toml first, then:
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The asset is then available at a stable URL that a Zellij config can load
+directly:
+
+```
+https://github.com/bamboo-brian/claude-monitor/releases/latest/download/claude-monitor-plugin.wasm
+```
+
 ## Install & run
 
 **1. Run the server** (any time before/after starting sessions):
@@ -96,12 +117,19 @@ safe to enable globally.
 ```kdl
 layout {
     pane size=34 {
+        // A locally-built wasm:
         plugin location="file:/absolute/path/to/claude-monitor-plugin.wasm"
+        // ...or load the released artifact straight from GitHub (Zellij caches it):
+        // plugin location="https://github.com/bamboo-brian/claude-monitor/releases/latest/download/claude-monitor-plugin.wasm"
         // server_url "http://127.0.0.1:47100"   // optional override
     }
     pane   // your work panes go here
 }
 ```
+
+The `releases/latest/download/…` URL always resolves to the newest release, so
+your config never needs the version in it. Releases are built by CI (see
+[Releasing](#releasing)).
 
 Or bind a key to open it on demand in `~/.config/zellij/config.kdl`:
 
