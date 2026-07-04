@@ -64,6 +64,10 @@ struct State {
     reported: Vec<ReportedInstance>,
     sessions: Vec<SessionInfo>,
     selected: usize,
+    /// Whether the `/` search prompt is active.
+    searching: bool,
+    /// Current search text; filters the list by session name while `searching`.
+    query: String,
 }
 
 register_plugin!(State);
@@ -128,16 +132,36 @@ impl ZellijPlugin for State {
         let visible = self.visible();
         let w = Some(cols);
         print_text_with_coordinates(Text::new("Claude instances").color_range(2, ..), 0, 0, w, None);
+
+        // When searching, show the query prompt just under the title. Color the
+        // leading `/` so the prompt reads as an active search field.
+        let header_rows = if self.searching {
+            let prompt = format!("/{}", self.query);
+            print_text_with_coordinates(Text::new(&prompt).color_range(2, 0..1), 0, 1, w, None);
+            3
+        } else {
+            2
+        };
+
         if visible.is_empty() {
-            print_text_with_coordinates(Text::new("(no active instances)").dim_all(), 0, 2, w, None);
+            let empty = if self.searching {
+                "(no matching instances)"
+            } else {
+                "(no active instances)"
+            };
+            print_text_with_coordinates(Text::new(empty).dim_all(), 0, header_rows, w, None);
             return;
         }
         for (i, entry) in visible.iter().enumerate() {
             let text = row_text(entry, i == self.selected);
-            print_text_with_coordinates(text, 0, i + 2, w, None);
+            print_text_with_coordinates(text, 0, header_rows + i, w, None);
         }
-        let hint = Text::new("↑/↓ select   ⏎ jump   q/esc close").dim_all();
-        print_text_with_coordinates(hint, 0, visible.len() + 3, w, None);
+        let hint = if self.searching {
+            Text::new("↑/↓ select   ⏎ jump   esc cancel search").dim_all()
+        } else {
+            Text::new("↑/↓ select   ⏎ jump   / search   q/esc close").dim_all()
+        };
+        print_text_with_coordinates(hint, 0, header_rows + visible.len() + 1, w, None);
     }
 }
 
@@ -191,6 +215,12 @@ impl State {
                 is_current_session,
             });
         }
+        // While searching, keep only sessions whose name matches the query
+        // (case-insensitive substring).
+        if self.searching && !self.query.is_empty() {
+            let needle = self.query.to_lowercase();
+            out.retain(|e| e.inst.zellij_session.to_lowercase().contains(&needle));
+        }
         out.sort_by(|a, b| {
             a.inst
                 .zellij_session
@@ -227,6 +257,9 @@ impl State {
     }
 
     fn handle_key(&mut self, key: KeyWithModifier) -> bool {
+        if self.searching {
+            return self.handle_search_key(key);
+        }
         let len = self.visible().len();
         match key.bare_key {
             BareKey::Up | BareKey::Char('k') => {
@@ -239,6 +272,12 @@ impl State {
                 }
                 true
             }
+            BareKey::Char('/') => {
+                self.searching = true;
+                self.query.clear();
+                self.selected = 0;
+                true
+            }
             BareKey::Enter => {
                 self.activate();
                 false
@@ -246,6 +285,47 @@ impl State {
             BareKey::Esc | BareKey::Char('q') => {
                 close_self();
                 false
+            }
+            _ => false,
+        }
+    }
+
+    /// Key handling while the `/` search prompt is active. Typed characters edit
+    /// the query and filter the list; arrows/Enter still move and choose the
+    /// selection; Esc cancels the search without closing the plugin.
+    fn handle_search_key(&mut self, key: KeyWithModifier) -> bool {
+        match key.bare_key {
+            BareKey::Up => {
+                self.selected = self.selected.saturating_sub(1);
+                true
+            }
+            BareKey::Down => {
+                let len = self.visible().len();
+                if len > 0 && self.selected + 1 < len {
+                    self.selected += 1;
+                }
+                true
+            }
+            BareKey::Enter => {
+                self.activate();
+                false
+            }
+            BareKey::Esc => {
+                self.searching = false;
+                self.query.clear();
+                self.selected = 0;
+                self.clamp_selection();
+                true
+            }
+            BareKey::Backspace => {
+                self.query.pop();
+                self.selected = 0;
+                true
+            }
+            BareKey::Char(c) => {
+                self.query.push(c);
+                self.selected = 0;
+                true
             }
             _ => false,
         }
