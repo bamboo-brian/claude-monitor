@@ -34,6 +34,19 @@ struct Instance {
     session_id: String,
     status: &'static str,
     cwd: String,
+    /// Extra metadata from the hook payloads, kept for any client to use.
+    /// `model`/`title`/`agent_type` only arrive on `SessionStart`, so they're
+    /// merged (a later event that omits them keeps the earlier value).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    model: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    title: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    permission_mode: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    transcript_path: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    agent_type: String,
     /// Zellij location metadata (empty / `None` for non-Zellij clients).
     #[serde(skip_serializing_if = "String::is_empty")]
     zellij_session: String,
@@ -176,22 +189,34 @@ async fn report(State(state): State<SharedState>, headers: HeaderMap, body: Byte
         let mut map = state.instances.lock().unwrap();
         match action_for(event, tool_name) {
             Action::Set(status) => {
-                let was_working = map.get(&session_id).map(|i| i.status) == Some("working");
+                let prev = map.get(&session_id);
+                let was_working = prev.map(|i| i.status) == Some("working");
                 let sounded = was_working && (status == "idle" || status == "waiting");
                 if sounded {
                     play_sound(&state.sound_cmd, status, &session_id, &zellij_session, zellij_pane);
                 }
-                map.insert(
-                    session_id.clone(),
-                    Instance {
-                        session_id: session_id.clone(),
-                        status,
-                        cwd,
-                        zellij_session: zellij_session.clone(),
-                        zellij_pane,
-                        updated_at: now_millis(),
-                    },
-                );
+                // Merge: keep a previously-seen value when this event doesn't
+                // carry it (model/title/agent_type only come on SessionStart).
+                let inst = Instance {
+                    session_id: session_id.clone(),
+                    status,
+                    cwd: merge(&cwd, prev.map(|i| &i.cwd)),
+                    model: merge(str_field(&payload, "model"), prev.map(|i| &i.model)),
+                    title: merge(str_field(&payload, "session_title"), prev.map(|i| &i.title)),
+                    permission_mode: merge(
+                        str_field(&payload, "permission_mode"),
+                        prev.map(|i| &i.permission_mode),
+                    ),
+                    transcript_path: merge(
+                        str_field(&payload, "transcript_path"),
+                        prev.map(|i| &i.transcript_path),
+                    ),
+                    agent_type: merge(str_field(&payload, "agent_type"), prev.map(|i| &i.agent_type)),
+                    zellij_session: merge(&zellij_session, prev.map(|i| &i.zellij_session)),
+                    zellij_pane: zellij_pane.or_else(|| prev.and_then(|i| i.zellij_pane)),
+                    updated_at: now_millis(),
+                };
+                map.insert(session_id.clone(), inst);
                 if sounded {
                     format!("{status} [SOUND]")
                 } else {
@@ -277,6 +302,15 @@ fn log_report(event: &str, id: &str, zellij_session: &str, outcome: &str) {
 
 fn str_field<'a>(payload: &'a Value, key: &str) -> &'a str {
     payload.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+/// Take `new` if non-empty, otherwise fall back to a previously-stored value.
+fn merge(new: &str, prev: Option<&String>) -> String {
+    if new.is_empty() {
+        prev.cloned().unwrap_or_default()
+    } else {
+        new.to_string()
+    }
 }
 
 fn header_str(headers: &HeaderMap, name: &str) -> String {

@@ -121,6 +121,27 @@ keybinds {
 On first launch Zellij prompts to grant the plugin permissions
 (ReadApplicationState, ChangeApplicationState, WebAccess) — accept them.
 
+## Server API
+
+`POST /report` — Claude Code hooks post their event JSON here (identity comes
+from the `X-Zellij-*` headers). `GET /state` — returns `{ "instances": [...] }`.
+Any client can poll it. Each instance:
+
+| Field | Notes |
+|-------|-------|
+| `session_id` | Claude Code session id — the instance key |
+| `status` | `idle` \| `working` \| `waiting` |
+| `cwd` | working directory |
+| `model` | model in use (from `SessionStart`) |
+| `title` | session title, if set (from `SessionStart`) |
+| `permission_mode` | `default` / `plan` / `acceptEdits` / `bypassPermissions` / … |
+| `transcript_path` | path to the conversation JSONL |
+| `agent_type` | custom agent name, if launched with `--agent` |
+| `zellij_session`, `zellij_pane` | Zellij location — omitted for non-Zellij instances |
+
+Empty fields are omitted. The Zellij plugin only uses `status`, `cwd`,
+`zellij_session`, `zellij_pane`; the rest are carried for other clients.
+
 ## Use
 
 With the plugin focused:
