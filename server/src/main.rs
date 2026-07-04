@@ -49,6 +49,9 @@ struct AppState {
     /// halted state (`idle`/`waiting`). Read once from `CLAUDE_MONITOR_SOUND`;
     /// `None` disables it. See `play_sound`.
     sound_cmd: Option<String>,
+    /// Log each inbound report to stdout. Off by default; enable with `--log`
+    /// or `CLAUDE_MONITOR_LOG`.
+    log: bool,
 }
 
 type SharedState = Arc<AppState>;
@@ -62,9 +65,14 @@ async fn main() {
     if sound_cmd.is_some() {
         println!("sound on working→halt enabled (CLAUDE_MONITOR_SOUND)");
     }
+    let log = resolve_log();
+    if log {
+        println!("request logging enabled");
+    }
     let state: SharedState = Arc::new(AppState {
         instances: Mutex::new(HashMap::new()),
         sound_cmd,
+        log,
     });
 
     let app = Router::new()
@@ -98,6 +106,18 @@ fn resolve_port() -> u16 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(47100)
+}
+
+/// Request logging is off unless `--log` is passed or `CLAUDE_MONITOR_LOG` is set
+/// to a non-empty value other than `0`/`false`.
+fn resolve_log() -> bool {
+    if std::env::args().any(|a| a == "--log") {
+        return true;
+    }
+    match std::env::var("CLAUDE_MONITOR_LOG") {
+        Ok(v) => !matches!(v.trim(), "" | "0" | "false"),
+        Err(_) => false,
+    }
 }
 
 /// What a hook event does to the tracked instance.
@@ -146,7 +166,9 @@ async fn report(State(state): State<SharedState>, headers: HeaderMap, body: Byte
 
     // The session id is the key; without it there's nothing to track.
     if session_id.is_empty() {
-        log_report(event, "-", &zellij_session, "ignored (no session_id)");
+        if state.log {
+            log_report(event, "-", &zellij_session, "ignored (no session_id)");
+        }
         return Json(json!({}));
     }
 
@@ -183,7 +205,9 @@ async fn report(State(state): State<SharedState>, headers: HeaderMap, body: Byte
             Action::Ignore => "ignored".to_string(),
         }
     };
-    log_report(event, short_id(&session_id), &zellij_session, &outcome);
+    if state.log {
+        log_report(event, short_id(&session_id), &zellij_session, &outcome);
+    }
     // Empty-object decision so HTTP decision hooks (e.g. PermissionRequest) read
     // "no opinion" and the normal flow proceeds.
     Json(json!({}))

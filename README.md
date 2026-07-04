@@ -174,6 +174,7 @@ deliberately delayed.
 |------------------|------------------------|---------------------------|
 | server           | `--port` / `CLAUDE_MONITOR_PORT` | `47100`         |
 | server           | `CLAUDE_MONITOR_SOUND` (sound on halt) | unset (off) |
+| server           | `--log` / `CLAUDE_MONITOR_LOG` (log each report to stdout) | off |
 | plugin           | `server_url` config    | `http://127.0.0.1:47100`  |
 | hooks (`.json`)  | `url`                  | `http://127.0.0.1:47100/report` |
 
