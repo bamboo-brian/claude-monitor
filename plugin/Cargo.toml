@@ -1,0 +1,17 @@
+[package]
+name = "claude-monitor-plugin"
+version = "0.1.0"
+edition = "2021"
+
+# Zellij plugins are WASI *command* modules: the `register_plugin!` macro
+# generates `fn main`, and Zellij calls the module's `_start`. This only works
+# for a bin crate, not a cdylib (a cdylib compiles to a reactor with no
+# `_start`, which fails to load with "could not find exported function").
+[[bin]]
+name = "claude-monitor-plugin"
+path = "src/main.rs"
+
+[dependencies]
+zellij-tile = "0.44.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -1,0 +1,3 @@
+# Build the plugin crate for wasm by default when run from its directory.
+# The server crate builds for the host target; pass an explicit --target for wasm:
+#   cargo build --release -p claude-monitor-plugin --target wasm32-wasip1
