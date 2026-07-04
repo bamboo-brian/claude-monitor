@@ -123,6 +123,11 @@ On first launch Zellij prompts to grant the plugin permissions
 
 ## Server API
 
+`GET /` — a bundled single-page **web UI** that polls `/state` and lists every
+instance with its status, location, model, and title. Open
+`http://127.0.0.1:47100/` in a browser (no build step — it's embedded in the
+binary).
+
 `POST /report` — Claude Code hooks post their event JSON here (identity comes
 from the `X-Zellij-*` headers). `GET /state` — returns `{ "instances": [...] }`.
 Any client can poll it. Each instance:

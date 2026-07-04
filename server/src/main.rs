@@ -21,7 +21,7 @@ use axum::{
     body::Bytes,
     extract::State,
     http::HeaderMap,
-    response::Json,
+    response::{Html, Json},
     routing::{get, post},
     Router,
 };
@@ -89,6 +89,7 @@ async fn main() {
     });
 
     let app = Router::new()
+        .route("/", get(index))
         .route("/report", post(report))
         .route("/state", get(state_handler))
         .with_state(state);
@@ -97,7 +98,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap_or_else(|e| panic!("failed to bind {addr}: {e}"));
-    println!("claude-monitor-server listening on http://{addr}");
+    println!("claude-monitor-server listening on http://{addr}  (web UI at http://{addr}/)");
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -236,6 +237,11 @@ async fn report(State(state): State<SharedState>, headers: HeaderMap, body: Byte
     // Empty-object decision so HTTP decision hooks (e.g. PermissionRequest) read
     // "no opinion" and the normal flow proceeds.
     Json(json!({}))
+}
+
+/// The bundled single-page web UI (polls `/state`).
+async fn index() -> Html<&'static str> {
+    Html(include_str!("index.html"))
 }
 
 async fn state_handler(State(state): State<SharedState>) -> Json<Value> {
