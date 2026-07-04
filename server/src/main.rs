@@ -9,13 +9,14 @@
 //! derived from the `hook_event_name` field of the event JSON body.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
     body::Bytes,
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::HeaderMap,
     response::Json,
     routing::{get, post},
     Router,
@@ -100,12 +101,25 @@ enum Action {
     Ignore,
 }
 
-fn action_for(event: &str) -> Action {
+/// Built-in tools that block on the user the moment they're invoked, so their
+/// `PreToolUse` means "waiting for input" rather than "working".
+fn is_input_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "AskUserQuestion" | "ExitPlanMode")
+}
+
+fn action_for(event: &str, tool_name: &str) -> Action {
     match event {
         "SessionStart" => Action::Set("idle"),
         "Stop" | "SubagentStop" => Action::Set("idle"),
-        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => Action::Set("working"),
-        "Notification" => Action::Set("waiting"),
+        "UserPromptSubmit" | "PostToolUse" => Action::Set("working"),
+        // A tool that immediately blocks on the user (AskUserQuestion / plan
+        // approval) means waiting; any other tool means actively working.
+        "PreToolUse" if is_input_tool(tool_name) => Action::Set("waiting"),
+        "PreToolUse" => Action::Set("working"),
+        // Waiting for the user: fired the moment a permission dialog appears, or
+        // when an MCP tool elicits input. (Not `Notification` — that one is
+        // informational and fires seconds late by design.)
+        "PermissionRequest" | "Elicitation" => Action::Set("waiting"),
         "SessionEnd" => Action::Remove,
         _ => Action::Ignore,
     }
@@ -115,13 +129,9 @@ async fn report(
     State(state): State<SharedState>,
     headers: HeaderMap,
     body: Bytes,
-) -> StatusCode {
+) -> Json<Value> {
     let session = header_str(&headers, "x-zellij-session");
-    // Not running inside Zellij (or misconfigured hook): nothing to track.
-    if session.is_empty() {
-        return StatusCode::OK;
-    }
-    let pane_id: u32 = header_str(&headers, "x-zellij-pane").parse().unwrap_or(0);
+    let pane_str = header_str(&headers, "x-zellij-pane");
 
     let payload: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
     let event = payload
@@ -138,34 +148,81 @@ async fn report(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
+    // Present on tool events (PreToolUse/PostToolUse); lets us treat
+    // input-blocking tools as "waiting".
+    let tool_name = payload
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    // Not running inside Zellij (or misconfigured hook): nothing to track.
+    if session.is_empty() {
+        log_report(event, "-", &pane_str, "ignored (no zellij session)");
+        return Json(json!({}));
+    }
+    let pane_id: u32 = pane_str.parse().unwrap_or(0);
 
     let key: InstanceKey = (session.clone(), pane_id);
-    let mut map = state.instances.lock().unwrap();
-    match action_for(event) {
-        Action::Set(status) => {
-            let was_working = map.get(&key).map(|i| i.status) == Some("working");
-            let halted = status == "idle" || status == "waiting";
-            if was_working && halted {
-                play_sound(&state.sound_cmd, status, &session, pane_id);
+    let outcome = {
+        let mut map = state.instances.lock().unwrap();
+        match action_for(event, tool_name) {
+            Action::Set(status) => {
+                let was_working = map.get(&key).map(|i| i.status) == Some("working");
+                let sounded = was_working && (status == "idle" || status == "waiting");
+                if sounded {
+                    play_sound(&state.sound_cmd, status, &session, pane_id);
+                }
+                map.insert(
+                    key,
+                    Instance {
+                        session: session.clone(),
+                        pane_id,
+                        status,
+                        cwd,
+                        session_id,
+                        updated_at: now_millis(),
+                    },
+                );
+                if sounded {
+                    format!("{status} [SOUND]")
+                } else {
+                    status.to_string()
+                }
             }
-            map.insert(
-                key,
-                Instance {
-                    session,
-                    pane_id,
-                    status,
-                    cwd,
-                    session_id,
-                    updated_at: now_millis(),
-                },
-            );
+            Action::Remove => {
+                map.remove(&key);
+                "removed".to_string()
+            }
+            Action::Ignore => "ignored".to_string(),
         }
-        Action::Remove => {
-            map.remove(&key);
-        }
-        Action::Ignore => {}
-    }
-    StatusCode::OK
+    };
+    log_report(event, &session, &pane_str, &outcome);
+    // Return an empty-object decision so HTTP decision hooks (e.g.
+    // PermissionRequest) read "no opinion" and the normal flow proceeds.
+    Json(json!({}))
+}
+
+/// Log an inbound report to stdout with a millisecond timestamp, flushing so it
+/// appears immediately even when stdout is redirected to a file (block-buffered).
+fn log_report(event: &str, session: &str, pane: &str, outcome: &str) {
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(
+        out,
+        "[{}] report event={event:<16} session={session} pane={pane} -> {outcome}",
+        hms_millis(),
+    );
+    let _ = out.flush();
+}
+
+/// Current wall-clock time of day as `HH:MM:SS.mmm` (UTC). Deltas between lines
+/// are exact, which is what matters for eyeballing latency.
+fn hms_millis() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    let (h, m, s) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
+    format!("{h:02}:{m:02}:{s:02}.{:03}", now.subsec_millis())
 }
 
 /// Fire the configured sound command (if any) for a working→halt transition.

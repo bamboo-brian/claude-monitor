@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"$ZELLIJ_SESSION_NAME\" ] && curl -s -m 2 -X POST http://127.0.0.1:47100/report -H \"X-Zellij-Session: $ZELLIJ_SESSION_NAME\" -H \"X-Zellij-Pane: $ZELLIJ_PANE_ID\" -H \"content-type: application/json\" -d \"{\\\"hook_event_name\\\":\\\"SessionStart\\\",\\\"cwd\\\":\\\"$PWD\\\"}\" || true"
+            "command": "[ -n \"$ZELLIJ_SESSION_NAME\" ] && curl -s -m 2 -X POST http://127.0.0.1:47100/report -H \"X-Zellij-Session: $ZELLIJ_SESSION_NAME\" -H \"X-Zellij-Pane: $ZELLIJ_PANE_ID\" -H \"content-type: application/json\" -d \"{\\\"hook_event_name\\\":\\\"SessionStart\\\",\\\"cwd\\\":\\\"$PWD\\\"}\" >/dev/null 2>&1 || true"
           }
         ]
       }
@@ -46,28 +46,61 @@
         ]
       }
     ],
-    "Notification": [
-      {
-        "matcher": "permission_prompt",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "[ -n \"$ZELLIJ_SESSION_NAME\" ] && curl -s -m 2 -X POST http://127.0.0.1:47100/report -H \"X-Zellij-Session: $ZELLIJ_SESSION_NAME\" -H \"X-Zellij-Pane: $ZELLIJ_PANE_ID\" -H \"content-type: application/json\" -d \"{\\\"hook_event_name\\\":\\\"Notification\\\",\\\"cwd\\\":\\\"$PWD\\\"}\" || true"
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "[ -n \"$ZELLIJ_SESSION_NAME\" ] && curl -s -m 2 -X POST http://127.0.0.1:47100/report -H \"X-Zellij-Session: $ZELLIJ_SESSION_NAME\" -H \"X-Zellij-Pane: $ZELLIJ_PANE_ID\" -H \"content-type: application/json\" -d \"{\\\"hook_event_name\\\":\\\"Stop\\\",\\\"cwd\\\":\\\"$PWD\\\"}\" || true"
+            "type": "http",
+            "url": "http://127.0.0.1:47100/report",
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID"
+            ]
           }
         ]
       }
     ],
     "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47100/report",
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID"
+            ]
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:47100/report",
+            "headers": {
+              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
+              "X-Zellij-Pane": "$ZELLIJ_PANE_ID"
+            },
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID"
+            ]
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
       {
         "hooks": [
           {

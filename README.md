@@ -17,9 +17,9 @@ Two pieces plus a hook config:
 
 ```
 Claude Code (in a zellij pane)
-  └─ HTTP hooks (type:"http")  ──POST event JSON + X-Zellij-* headers──►  ┌──────────────┐
-     SessionStart/UserPromptSubmit/PreToolUse/Notification/Stop/End       │ server 47100 │
-                                                                          └──────────────┘
+  └─ hooks (http + command)  ──POST event JSON + X-Zellij-* headers──►  ┌──────────────┐
+     SessionStart/UserPromptSubmit/PreToolUse/PermissionRequest/Stop/End │ server 47100 │
+                                                                         └──────────────┘
 zellij plugin (one per session)  ◄────────── GET /state ──────────────────────┘
   • polls /state every second       • SessionUpdate → live pane list (all sessions)
   • drops instances whose pane is gone   • Enter → switch_session_with_focus(...)
@@ -28,16 +28,22 @@ zellij plugin (one per session)  ◄────────── GET /state �
 - Instance identity is `(zellij session, pane id)`, passed by the hooks as the
   `X-Zellij-Session` / `X-Zellij-Pane` headers (interpolated from
   `$ZELLIJ_SESSION_NAME` / `$ZELLIJ_PANE_ID`, which Zellij sets in every pane).
-- **`SessionStart`, `Stop`, and `Notification` are `command` (curl) hooks, not
-  `http`.** Claude dispatches HTTP hooks asynchronously/deferred: at startup they
-  can be dropped entirely (so `SessionStart` never arrived), and for `Stop` /
-  `Notification` the deferral adds noticeable latency — which matters because
-  those drive the *sound on halt* (below). Command hooks run synchronously the
-  moment the event fires, so they're both reliable and prompt. They send the same
-  body/identity as the HTTP hooks. The remaining status events stay HTTP.
+- All events are `http` hooks **except `SessionStart`, which is a `command`
+  (curl) hook.** A `SessionStart` HTTP hook fires so early in startup that it gets
+  dropped and the report never arrives; running it as a synchronous command hook
+  fixes that, so a new instance shows up as *idle* before its first prompt. The
+  rest are reliable as HTTP hooks.
+- Waiting uses **`PermissionRequest`** (fires the instant a permission dialog
+  appears) and **`Elicitation`** (an MCP tool asking for input) — *not*
+  `Notification`, which is informational and fires several seconds late by design.
+  That wrong-event choice, not the HTTP transport, was the source of the earlier
+  "delayed sound".
 - The server maps each `hook_event_name` to a status:
   `SessionStart`/`Stop` → idle, `UserPromptSubmit`/`PreToolUse` → working,
-  `Notification` (permission prompt) → waiting, `SessionEnd` → removed.
+  `PermissionRequest`/`Elicitation` → waiting, `SessionEnd` → removed.
+- `PreToolUse` also reads `tool_name`: tools that immediately block on the user —
+  `AskUserQuestion` and `ExitPlanMode` — map to **waiting** instead of working,
+  so the monitor shows (and dings on) those too.
 - Liveness is self-healing but best-effort: the plugin cross-checks each
   reported instance against Zellij's own `SessionUpdate` pane list and drops any
   whose pane is positively gone — so crashed/killed instances disappear even if
@@ -150,12 +156,12 @@ environment (the systemd user unit's `Environment=` or the launchd plist's
 `EnvironmentVariables` dict). Note a background service may need access to your
 audio session for the player to work.
 
-**Latency:** the player itself starts in ~100 ms; two things dominate perceived
-delay. First, use a *short* sound with an immediate attack — `complete.oga` is a
-~1.1 s gentle chime, so something like `canberra-gtk-play -i message` feels much
-snappier. Second, the `Stop`/`Notification` hooks that trigger it are `command`
-hooks (not `http`) precisely so they fire without Claude's HTTP-hook dispatch
-lag.
+**Latency:** the player itself starts in ~100 ms, so if the ding feels late the
+usual cause is either (a) a long/soft sound — use one with an immediate attack,
+e.g. `canberra-gtk-play -i message` instead of the ~1.1 s `complete.oga` — or
+(b) the wrong *event*. The waiting ding uses `PermissionRequest`, which fires the
+instant the permission dialog appears, rather than `Notification`, which is
+deliberately delayed.
 
 ## Config
 
