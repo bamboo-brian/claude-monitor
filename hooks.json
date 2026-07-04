@@ -20,7 +20,10 @@
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
               "X-Zellij-Pane": "$ZELLIJ_PANE_ID"
             },
-            "allowedEnvVars": ["ZELLIJ_SESSION_NAME", "ZELLIJ_PANE_ID"]
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID"
+            ]
           }
         ]
       }
@@ -35,7 +38,10 @@
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
               "X-Zellij-Pane": "$ZELLIJ_PANE_ID"
             },
-            "allowedEnvVars": ["ZELLIJ_SESSION_NAME", "ZELLIJ_PANE_ID"]
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID"
+            ]
           }
         ]
       }
@@ -45,13 +51,8 @@
         "matcher": "permission_prompt",
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:47100/report",
-            "headers": {
-              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
-              "X-Zellij-Pane": "$ZELLIJ_PANE_ID"
-            },
-            "allowedEnvVars": ["ZELLIJ_SESSION_NAME", "ZELLIJ_PANE_ID"]
+            "type": "command",
+            "command": "[ -n \"$ZELLIJ_SESSION_NAME\" ] && curl -s -m 2 -X POST http://127.0.0.1:47100/report -H \"X-Zellij-Session: $ZELLIJ_SESSION_NAME\" -H \"X-Zellij-Pane: $ZELLIJ_PANE_ID\" -H \"content-type: application/json\" -d \"{\\\"hook_event_name\\\":\\\"Notification\\\",\\\"cwd\\\":\\\"$PWD\\\"}\" || true"
           }
         ]
       }
@@ -60,13 +61,8 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:47100/report",
-            "headers": {
-              "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
-              "X-Zellij-Pane": "$ZELLIJ_PANE_ID"
-            },
-            "allowedEnvVars": ["ZELLIJ_SESSION_NAME", "ZELLIJ_PANE_ID"]
+            "type": "command",
+            "command": "[ -n \"$ZELLIJ_SESSION_NAME\" ] && curl -s -m 2 -X POST http://127.0.0.1:47100/report -H \"X-Zellij-Session: $ZELLIJ_SESSION_NAME\" -H \"X-Zellij-Pane: $ZELLIJ_PANE_ID\" -H \"content-type: application/json\" -d \"{\\\"hook_event_name\\\":\\\"Stop\\\",\\\"cwd\\\":\\\"$PWD\\\"}\" || true"
           }
         ]
       }
@@ -81,7 +77,10 @@
               "X-Zellij-Session": "$ZELLIJ_SESSION_NAME",
               "X-Zellij-Pane": "$ZELLIJ_PANE_ID"
             },
-            "allowedEnvVars": ["ZELLIJ_SESSION_NAME", "ZELLIJ_PANE_ID"]
+            "allowedEnvVars": [
+              "ZELLIJ_SESSION_NAME",
+              "ZELLIJ_PANE_ID"
+            ]
           }
         ]
       }

@@ -28,11 +28,13 @@ zellij plugin (one per session)  ◄────────── GET /state �
 - Instance identity is `(zellij session, pane id)`, passed by the hooks as the
   `X-Zellij-Session` / `X-Zellij-Pane` headers (interpolated from
   `$ZELLIJ_SESSION_NAME` / `$ZELLIJ_PANE_ID`, which Zellij sets in every pane).
-- **`SessionStart` is a `command` (curl) hook, not `http`.** HTTP hooks are
-  fire-and-forget and don't reliably complete this early in startup, so the
-  report never arrives. A command hook (which Claude runs synchronously) is
-  reliable, so a new instance shows up as *idle* before its first prompt. It
-  sends the same headers/body as the HTTP hooks.
+- **`SessionStart`, `Stop`, and `Notification` are `command` (curl) hooks, not
+  `http`.** Claude dispatches HTTP hooks asynchronously/deferred: at startup they
+  can be dropped entirely (so `SessionStart` never arrived), and for `Stop` /
+  `Notification` the deferral adds noticeable latency — which matters because
+  those drive the *sound on halt* (below). Command hooks run synchronously the
+  moment the event fires, so they're both reliable and prompt. They send the same
+  body/identity as the HTTP hooks. The remaining status events stay HTTP.
 - The server maps each `hook_event_name` to a status:
   `SessionStart`/`Stop` → idle, `UserPromptSubmit`/`PreToolUse` → working,
   `Notification` (permission prompt) → waiting, `SessionEnd` → removed.
@@ -147,6 +149,13 @@ To enable it under a service manager, add `CLAUDE_MONITOR_SOUND` to the unit's
 environment (the systemd user unit's `Environment=` or the launchd plist's
 `EnvironmentVariables` dict). Note a background service may need access to your
 audio session for the player to work.
+
+**Latency:** the player itself starts in ~100 ms; two things dominate perceived
+delay. First, use a *short* sound with an immediate attack — `complete.oga` is a
+~1.1 s gentle chime, so something like `canberra-gtk-play -i message` feels much
+snappier. Second, the `Stop`/`Notification` hooks that trigger it are `command`
+hooks (not `http`) precisely so they fire without Claude's HTTP-hook dispatch
+lag.
 
 ## Config
 
